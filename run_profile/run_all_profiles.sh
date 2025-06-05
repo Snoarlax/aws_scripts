@@ -1,4 +1,5 @@
 #!/bin/bash
+# TODO: Alias the aws command instead? might work better and allow it to be combined with other tools...
 
 if [ $# -eq 0 ]; then
   echo "Usage: $0 \"AWS_COMMAND\""

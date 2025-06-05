@@ -49,7 +49,7 @@ class TrustPolicyExtractor:
     def __init__(self, json_file_paths: List[str]):
         self.json_file_paths = [Path(json_file_path) for json_file_path in json_file_paths]
         self.auth_details: List[Optional[AccountAuthorizationDetails]] = []
-        self.trust_policies: List[RoleTrustPolicy] = []
+        self.trust_policies: set[RoleTrustPolicy] = set()
 
     def __str__(self):
         return json.dumps([p.model_dump() for p in self.trust_policies], indent=2, default=str)
@@ -107,56 +107,19 @@ class TrustPolicyExtractor:
 
                     trust_policy = TrustPolicy.model_validate(assume_role_policy)
                     
-                    self.trust_policies.append(trust_policy)
+                    self.trust_policies.add(trust_policy)
                     
                 except Exception as e:
                     print(f"Warning: Could not parse trust policy for role {role_name}: {e}")
                     continue
         
         print(f"Successfully extracted {len(self.trust_policies)} trust policies")
-    
-    def filter_roles(self, role_filter: str) -> List[RoleTrustPolicy]:
-        """
-        Filter roles by name.
-        
-        Args:
-            role_filter: String to filter role names (case-insensitive partial match)
-            
-        Returns:
-            List of filtered RoleTrustPolicy objects
-        """
-        return [
-            policy for policy in self.trust_policies
-            if role_filter.lower() in policy.role_name.lower()
-        ]
-    
-    def get_roles_by_principal_type(self, principal_type: str) -> List[RoleTrustPolicy]:
-        """
-        Get roles that can be assumed by a specific principal type.
-        
-        Args:
-            principal_type: Type of principal ('Service', 'AWS', 'Federated', etc.)
-            
-        Returns:
-            List of RoleTrustPolicy objects
-        """
-        matching_roles = []
-        
-        for role_policy in self.trust_policies:
-            for statement in role_policy.trust_policy.statement:
-                if isinstance(statement.principal, dict):
-                    if principal_type.lower() in [k.lower() for k in statement.principal.keys()]:
-                        matching_roles.append(role_policy)
-                        break
-        
-        return matching_roles
-    
 
     def apply_filters(self,filters):
         filtered_policies = self.trust_policies.copy()
         for target,regex in filters:
             if target == "Principal":
-                # if one of the trust policies match, filter the whole role
+                # if one of the statements match, filter the whole trust policy
                 # TODO: Change this this is literally the worst thing i've ever written
                 filtered_policies = [
                     policy for policy in filtered_policies if not any([
@@ -164,6 +127,18 @@ class TrustPolicyExtractor:
                     ])
                 ]
         print(json.dumps([p.model_dump() for p in filtered_policies], indent=2, default=str))
+        print(f"{len(filtered_policies)} trust policies shown. ")
+
+    def show_filters(self,regex):
+        filtered_policies = self.trust_policies.copy()
+        # if one of the statements match, show the whole trust policy
+        filtered_policies = [
+            policy for policy in filtered_policies if any([
+                re.search(regex, json.dumps(statement["Principal"])) for statement in policy.Statement
+            ])
+        ]
+        print(json.dumps([p.model_dump() for p in filtered_policies], indent=2, default=str))
+        print(f"{len(filtered_policies)} trust policies shown. ")
 
 def interactive_menu(extractor):
     filters = []
@@ -181,6 +156,7 @@ def interactive_menu(extractor):
                 print("  principal/p <REGEX> - Add regex filter to remove principals with NAME")
                 print("  remove/r <n> - remove filter with index <n> (starting from 0)")
                 print("  show/s - Show the current policies")
+                print("  filter/f <REGEX>- filter policies with regex (for principal) ")
                 print("  help/h - Show this help message")
                 print("  quit/exit/q - Exit the program")
 
@@ -191,6 +167,10 @@ def interactive_menu(extractor):
             elif user_input.lower().split(" ")[0] in ['remove', 'r']:
                 index = int(" ".join(user_input.split(" ")[1:]))
                 del filters[index]
+
+            elif user_input.lower().split(" ")[0] in ['filter', 'f']:
+                regex = " ".join(user_input.split(" ")[1:])
+                extractor.show_filters(regex)
 
             elif user_input.lower() in ['show', 's']:
                 extractor.apply_filters(filters)

@@ -8,6 +8,7 @@ from typing import Dict, List, Any, Optional, Union
 import urllib.parse
 
 from pydantic import BaseModel, Field, validator
+import argparse
 
 class HashableModel(BaseModel):
     __hash: str = None
@@ -45,22 +46,16 @@ class AccountAuthorizationDetails(HashableModel):
 class TrustPolicyExtractor:
     """Main class for extracting and processing trust policies."""
     
-    def __init__(self, json_file_path: str):
-        """
-        Initialize the extractor with a JSON file path.
-        
-        Args:
-            json_file_path: Path to the JSON file containing authorization details
-        """
-        self.json_file_path = Path(json_file_path)
-        self.auth_details: Optional[AccountAuthorizationDetails] = None
+    def __init__(self, json_file_paths: List[str]):
+        self.json_file_paths = [Path(json_file_path) for json_file_path in json_file_paths]
+        self.auth_details: List[Optional[AccountAuthorizationDetails]] = []
         self.trust_policies: List[RoleTrustPolicy] = []
 
     def __str__(self):
         return json.dumps([p.model_dump() for p in self.trust_policies], indent=2, default=str)
 
     
-    def load_json_file(self) -> Dict[str, Any]:
+    def load_json_files(self) -> Dict[str, Any]:
         """
         Load and parse the JSON file.
         
@@ -71,23 +66,26 @@ class TrustPolicyExtractor:
             FileNotFoundError: If the JSON file doesn't exist
             json.JSONDecodeError: If the file contains invalid JSON
         """
-        if not self.json_file_path.exists():
-            raise FileNotFoundError(f"JSON file not found: {self.json_file_path}")
+        if not all([json_file_path.exists() for json_file_path in self.json_file_paths]):
+            raise FileNotFoundError(f"JSON file not found: {self.json_file_paths}")
         
         try:
-            with open(self.json_file_path, 'r') as f:
-                data = json.load(f)
+            data = []
+            for path in self.json_file_paths:
+                with open(path, 'r') as f:
+                    data.append(json.load(f))
             return data
         except json.JSONDecodeError as e:
-            raise json.JSONDecodeError(f"Invalid JSON in file {self.json_file_path}: {e}")
+            raise json.JSONDecodeError(f"Invalid JSON in file {self.json_file_paths}: {e}")
     
     def parse_authorization_details(self) -> None:
         """Parse the JSON file and create AccountAuthorizationDetails model."""
-        json_data = self.load_json_file()
-        
+        json_datas = self.load_json_files()
+        self.auth_details = []
         try:
-            self.auth_details = AccountAuthorizationDetails(**json_data)
-            print(f"Successfully parsed authorization details with {len(self.auth_details.role_detail_list)} roles")
+            for data in json_datas:
+                self.auth_details.append(AccountAuthorizationDetails(**data))
+                print(f"Successfully parsed authorization details with {sum([len(authdetail.role_detail_list) for authdetail in self.auth_details])} roles")
         except Exception as e:
             print(f"Error parsing authorization details: {e}")
             sys.exit(1)
@@ -96,23 +94,24 @@ class TrustPolicyExtractor:
         """Extract trust policies from the authorization details and create RoleTrustPolicy models."""
         if not self.auth_details:
             raise ValueError("Authorization details not loaded. Call parse_authorization_details() first.")
-        
-        for role_data in self.auth_details.role_detail_list:
-            try:
-                role_name = role_data.get('RoleName', 'Unknown')
-                assume_role_policy = role_data.get('AssumeRolePolicyDocument')
-                
-                if not assume_role_policy:
-                    print(f"Warning: No trust policy found for role {role_name}")
-                    continue
 
-                trust_policy = TrustPolicy.model_validate(assume_role_policy)
-                
-                self.trust_policies.append(trust_policy)
-                
-            except Exception as e:
-                print(f"Warning: Could not parse trust policy for role {role_name}: {e}")
-                continue
+        for gaad in self.auth_details:
+            for role_data in gaad.role_detail_list:
+                try:
+                    assume_role_policy = role_data.get('AssumeRolePolicyDocument')
+                    
+                    if not assume_role_policy:
+                        role_name = role_data.get('RoleName', 'Unknown')
+                        print(f"Warning: No trust policy found for role {role_name}")
+                        continue
+
+                    trust_policy = TrustPolicy.model_validate(assume_role_policy)
+                    
+                    self.trust_policies.append(trust_policy)
+                    
+                except Exception as e:
+                    print(f"Warning: Could not parse trust policy for role {role_name}: {e}")
+                    continue
         
         print(f"Successfully extracted {len(self.trust_policies)} trust policies")
     
@@ -206,19 +205,19 @@ def interactive_menu(extractor):
 
 def main():
     """Main function to orchestrate the trust policy extraction."""
-    import argparse
     
     parser = argparse.ArgumentParser(
         description='Parse IAM Role trust policies from local JSON file'
     )
     parser.add_argument(
-        'json_file',
+        'json_files',
+        nargs="+",
         help='Path to JSON file containing get-account-authorization-details output'
     )
     args = parser.parse_args()
     
     # Initialize extractor
-    extractor = TrustPolicyExtractor(args.json_file)
+    extractor = TrustPolicyExtractor(args.json_files)
     
     try:
         # Parse the JSON file
